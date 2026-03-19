@@ -1483,12 +1483,13 @@ Fill in realistic numbers based on what this type of card typically sells for. I
 }
 
 // ── HOME / PORTFOLIO ───────────────────────────────────────────
-function HomeView({ cards, onSelectCard, onScan }) {
+function HomeView({ cards, onSelectCard, onScan, onRefreshAll, fetching }) {
   const active=cards.filter(c=>!c.sold), sold=cards.filter(c=>c.sold);
   const tv=active.reduce((s,c)=>s+c.value,0), tc=cards.reduce((s,c)=>s+costBasis(c),0);
   const ug=active.reduce((s,c)=>s+gainLoss(c),0), rg=sold.reduce((s,c)=>s+gainLoss(c),0);
   const ph=(cards[0]?.priceHistory||[]).map((pt,i)=>({month:pt.month,value:active.reduce((s,c)=>s+(c.priceHistory?.[i]?.value||c.value),0)}));
   const topMovers=[...active].sort((a,b)=>parseFloat(b.change24h||0)-parseFloat(a.change24h||0)).slice(0,4);
+  const pricedCount = active.filter(c=>c.priceMostRecentSold>0).length;
 
   return (
     <div style={{paddingBottom:90}}>
@@ -1505,9 +1506,29 @@ function HomeView({ cards, onSelectCard, onScan }) {
               <span style={{fontSize:10,color:TEXT3}}>unrealized</span>
             </div>
           </div>
-          <div style={{textAlign:"right"}}>
+          <div style={{textAlign:"right",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6}}>
             <div style={{fontSize:12,color:TEXT3,fontFamily:"'DM Mono',monospace"}}>{active.length} cards</div>
-            <div style={{fontSize:12,color:rg>=0?GREEN:RED,fontFamily:"'DM Mono',monospace",marginTop:4,fontWeight:700}}>+{fmt$k(rg)} realized</div>
+            <div style={{fontSize:12,color:rg>=0?GREEN:RED,fontFamily:"'DM Mono',monospace",fontWeight:700}}>{rg>=0?"+":""}{fmt$k(rg)} realized</div>
+            {active.length > 0 && (
+              <button
+                onClick={onRefreshAll}
+                disabled={fetching}
+                style={{
+                  display:"flex",alignItems:"center",gap:5,
+                  background:fetching?"transparent":ACCENT+"18",
+                  color:fetching?TEXT3:ACCENT,
+                  border:`1px solid ${fetching?BORDER:ACCENT+"55"}`,
+                  borderRadius:8,padding:"5px 10px",fontSize:11,
+                  fontFamily:"'DM Mono',monospace",fontWeight:600,
+                  cursor:fetching?"not-allowed":"pointer",
+                  transition:"all .2s",whiteSpace:"nowrap"
+                }}>
+                {fetching
+                  ? <><span style={{display:"inline-block",width:10,height:10,border:`1.5px solid ${TEXT3}`,borderTop:`1.5px solid ${ACCENT}`,borderRadius:"50%",animation:"spin .7s linear infinite"}}/>Updating…</>
+                  : <>↻ Refresh All{pricedCount > 0 ? ` (${active.length})` : ""}</>
+                }
+              </button>
+            )}
           </div>
         </div>
         <div style={{height:90,margin:"0 -4px",borderRadius:8,background:T.dark?"transparent":"#EBEBEB"}}><MiniChart data={ph} height={90}/></div>
@@ -2932,16 +2953,42 @@ function AppInner() {
     }
   };
 
-  const refreshPrice = async (card) => {
+  const refreshAll = async () => {
+    const activeCards = cards.filter(c => !c.sold);
+    if (!activeCards.length) return;
+    const n = activeCards.length;
+    const costPer = 0.005;
+    const totalCost = (n * costPer).toFixed(2);
     const ok = await confirmCost({
-      action: `Refresh price for "${card.name}"`,
+      action: `Refresh prices for all ${n} card${n !== 1 ? "s" : ""}`,
       calls: [
-        { label: "Claude Haiku — eBay price lookup", detail: "Web search + ~300 output tokens", cost: "~$0.005" },
+        {
+          label: `Claude Haiku — eBay price lookup × ${n}`,
+          detail: `Web search + ~300 output tokens per card`,
+          cost: `~$${costPer.toFixed(3)} × ${n} cards`
+        },
       ],
-      total: "~$0.01",
-      note: "Searches eBay completed sold listings to update this card's market value."
+      total: `~$${totalCost}`,
+      note: `This will make ${n} separate API call${n !== 1 ? "s" : ""} — one per card — to look up current eBay sold prices. Cards are updated one at a time.`,
     });
     if (!ok) return;
+    for (const card of activeCards) {
+      await refreshPrice(card, true); // pass silent=true to skip per-card confirm
+    }
+  };
+
+  const refreshPrice = async (card, silent = false) => {
+    if (!silent) {
+      const ok = await confirmCost({
+        action: `Refresh price for "${card.name}"`,
+        calls: [
+          { label: "Claude Haiku — eBay price lookup", detail: "Web search + ~300 output tokens", cost: "~$0.005" },
+        ],
+        total: "~$0.01",
+        note: "Searches eBay completed sold listings to update this card's market value."
+      });
+      if (!ok) return;
+    }
     setFetching(true);
     try {
       const searchQ = [card.name, card.set, card.number, card.year, card.gradingService && card.gradingGrade ? `${card.gradingService} ${card.gradingGrade}` : ""].filter(Boolean).join(" ").trim();
@@ -3210,7 +3257,7 @@ function AppInner() {
       {/* ── MAIN CONTENT ── */}
       <div className="cd-content" ref={contentRef} onScroll={handleContentScroll}
         style={{paddingBottom: showNav ? "calc(80px + env(safe-area-inset-bottom, 0px))" : 0, overflowX:"hidden", width:"100%", boxSizing:"border-box"}}>
-        {page==="home"&&<HomeView cards={cards} onSelectCard={openCard} onScan={()=>navTo("scan")}/>}
+        {page==="home"&&<HomeView cards={cards} onSelectCard={openCard} onScan={()=>navTo("scan")} onRefreshAll={refreshAll} fetching={fetching}/>}
         {page==="collection"&&<CollectionView cards={cards} onSelectCard={openCard} onDelete={deleteCard} onImportCards={importCards}/>}
         {page==="scan"&&<ScannerView onCardAdded={addCard} onWatchlistAdded={addToWatchlist} onBack={()=>navTo("home")} apiKey={apiKey}/>}
         {page==="market"&&<MarketplaceView cards={cards} watchlist={watchlist} removeFromWatchlist={removeFromWatchlist} apiKey={apiKey}/>}
